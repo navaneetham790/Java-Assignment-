@@ -1,0 +1,650 @@
+package com.market;
+import java.time.LocalDate;
+import java.util.*;
+
+/**
+ * FarmersMarketApp.java
+ *
+ * Single-file implementation containing all required classes as inner classes.
+ * Implements: Vendor, Product, Order, OrderItem, Payment, Delivery, ReturnRequest
+ *
+ * Business rules enforced:
+ *  - Orders only for available vendor inventory
+ *  - Stock decreases on order confirmation, increases on approved returns
+ *  - Payments must be settled before scheduling delivery
+ *  - Returns allowed within policy (7 days) and cannot exceed purchased qty
+ *  - Order items linked to vendor's product
+ *
+ * Console menu:
+ * Add Vendor / Add Product / Place Order / Record Payment / Schedule Delivery /
+ * Request Return / Display Inventory / Exit
+ */
+public class FarmersMarketApp {
+
+    // ----------------------------
+    // Data stores (application state)
+    // ----------------------------
+    private static final List<Vendor> vendors = new ArrayList<>();
+    private static final List<Product> products = new ArrayList<>();
+    private static final List<Order> orders = new ArrayList<>();
+    private static final List<Payment> payments = new ArrayList<>();
+    private static final List<Delivery> deliveries = new ArrayList<>();
+    private static final List<ReturnRequest> returns = new ArrayList<>();
+
+    private static final Scanner sc = new Scanner(System.in);
+
+    // ----------------------------
+    // MAIN
+    // ----------------------------
+    public static void main(String[] args) {
+        seedSampleData(); // optional: seed some sample vendors/products for quick testing
+        int choice;
+        do {
+            printMenu();
+            choice = readIntInRange("Enter choice: ", 1, 8);
+            switch (choice) {
+                case 1 -> addVendorInteractive();
+                case 2 -> addProductInteractive();
+                case 3 -> placeOrderInteractive();
+                case 4 -> recordPaymentInteractive();
+                case 5 -> scheduleDeliveryInteractive();
+                case 6 -> requestReturnInteractive();
+                case 7 -> displayInventoryInteractive();
+                case 8 -> System.out.println("Exiting. Thank you!");
+                default -> System.out.println("Invalid choice.");
+            }
+        } while (choice != 8);
+
+        sc.close();
+    }
+
+    // ----------------------------
+    // Menu & helpers
+    // ----------------------------
+    private static void printMenu() {
+        System.out.println("\n=== Farmers Market Management System ===");
+        System.out.println("1. Add Vendor");
+        System.out.println("2. Add Product");
+        System.out.println("3. Place Order");
+        System.out.println("4. Record Payment");
+        System.out.println("5. Schedule Delivery");
+        System.out.println("6. Request Return");
+        System.out.println("7. Display Inventory");
+        System.out.println("8. Exit");
+    }
+
+    private static int readIntInRange(String prompt, int min, int max) {
+        int v;
+        while (true) {
+            System.out.print(prompt);
+            String line = sc.nextLine().trim();
+            try {
+                v = Integer.parseInt(line);
+                if (v < min || v > max) {
+                    System.out.printf("Please enter a number between %d and %d.%n", min, max);
+                } else {
+                    return v;
+                }
+            } catch (NumberFormatException e) {
+                System.out.println("Invalid integer. Try again.");
+            }
+        }
+    }
+
+    private static int readPositiveInt(String prompt) {
+        int v;
+        while (true) {
+            System.out.print(prompt);
+            String line = sc.nextLine().trim();
+            try {
+                v = Integer.parseInt(line);
+                if (v <= 0) {
+                    System.out.println("Please enter a positive integer.");
+                } else {
+                    return v;
+                }
+            } catch (NumberFormatException e) {
+                System.out.println("Invalid integer. Try again.");
+            }
+        }
+    }
+
+    private static double readPositiveDouble(String prompt) {
+        double v;
+        while (true) {
+            System.out.print(prompt);
+            String line = sc.nextLine().trim();
+            try {
+                v = Double.parseDouble(line);
+                if (v <= 0) {
+                    System.out.println("Please enter a positive number.");
+                } else {
+                    return v;
+                }
+            } catch (NumberFormatException e) {
+                System.out.println("Invalid number. Try again.");
+            }
+        }
+    }
+
+    private static String readNonEmpty(String prompt) {
+        String s;
+        do {
+            System.out.print(prompt);
+            s = sc.nextLine().trim();
+            if (s.isEmpty()) System.out.println("Input cannot be empty.");
+        } while (s.isEmpty());
+        return s;
+    }
+
+    // ----------------------------
+    // Interactive operations
+    // ----------------------------
+    private static void addVendorInteractive() {
+        System.out.println("\n--- Add Vendor ---");
+        String name = readNonEmpty("Vendor name: ");
+        String contact = readNonEmpty("Contact info: ");
+        Vendor v = new Vendor(name, contact);
+        vendors.add(v);
+        System.out.printf("Vendor added with ID: %d%n", v.getId());
+    }
+
+    private static void addProductInteractive() {
+        if (vendors.isEmpty()) {
+            System.out.println("No vendors available. Add a vendor first.");
+            return;
+        }
+        System.out.println("\n--- Add Product ---");
+        listVendorsBrief();
+        int vid = readPositiveInt("Enter vendor ID to associate product with: ");
+        Vendor vendor = findVendorById(vid);
+        if (vendor == null) {
+            System.out.println("Vendor not found.");
+            return;
+        }
+        String name = readNonEmpty("Product name: ");
+        double price = readPositiveDouble("Price per unit: ");
+        int qty = readPositiveInt("Initial stock quantity: ");
+        Product p = new Product(vendor.getId(), name, price, qty);
+        products.add(p);
+        vendor.getProducts().add(p.getId());
+        System.out.printf("Product added with ID: %d for Vendor %s%n", p.getId(), vendor.getName());
+    }
+
+    private static void placeOrderInteractive() {
+        System.out.println("\n--- Place Order ---");
+        String customer = readNonEmpty("Customer name: ");
+        Order order = new Order(customer, LocalDate.now());
+        boolean adding = true;
+
+        if (products.isEmpty()) {
+            System.out.println("No products available to order.");
+            return;
+        }
+
+        while (adding) {
+            displayAllProducts();
+            int pid = readPositiveInt("Enter product ID to add to order (0 to finish): ");
+            if (pid == 0) break;
+            Product prod = findProductById(pid);
+            if (prod == null) {
+                System.out.println("Product not found.");
+                continue;
+            }
+            System.out.printf("Available stock for %s: %d%n", prod.getName(), prod.getStock());
+            int qty = readPositiveInt("Enter quantity: ");
+            if (qty > prod.getStock()) {
+                System.out.println("Requested quantity exceeds available stock. Try again.");
+                continue;
+            }
+            // Link to vendor id stored in product
+            OrderItem oi = new OrderItem(prod.getVendorId(), prod.getId(), prod.getName(), prod.getPrice(), qty);
+            order.getItems().add(oi);
+            System.out.println("Item added to order.");
+            System.out.print("Add another item? (y/n): ");
+            String yn = sc.nextLine().trim().toLowerCase();
+            adding = yn.equals("y");
+        }
+
+        if (order.getItems().isEmpty()) {
+            System.out.println("No items in order. Order cancelled.");
+            return;
+        }
+
+        // Confirm order: reduce stock now and set status
+        for (OrderItem oi : order.getItems()) {
+            Product p = findProductById(oi.getProductId());
+            p.setStock(p.getStock() - oi.getQuantity()); // business rule: stock decreases on order confirmation
+        }
+        order.calculateTotals();
+        orders.add(order);
+        System.out.printf("Order placed successfully with Order ID: %d%n", order.getId());
+        System.out.println("\n--- Order Invoice ---");
+        order.printInvoice();
+    }
+
+    private static void recordPaymentInteractive() {
+        System.out.println("\n--- Record Payment ---");
+        if (orders.isEmpty()) {
+            System.out.println("No orders found.");
+            return;
+        }
+        listOrdersBrief();
+        int oid = readPositiveInt("Enter Order ID to record payment for: ");
+        Order order = findOrderById(oid);
+        if (order == null) {
+            System.out.println("Order not found.");
+            return;
+        }
+        if (order.isPaid()) {
+            System.out.println("Order already paid.");
+            return;
+        }
+        System.out.printf("Order total: %.2f%n", order.getTotalAmount());
+        double amt = readPositiveDouble("Enter payment amount: ");
+        if (Math.abs(amt - order.getTotalAmount()) > 0.001) {
+            System.out.println("Amount must match order total. Payment rejected.");
+            return;
+        }
+        String method = readNonEmpty("Payment method (Cash/Card/UPI): ");
+        Payment p = new Payment(order.getId(), amt, method, LocalDate.now());
+        payments.add(p);
+        order.setPaid(true);
+        System.out.println("Payment recorded. Payment ID: " + p.getId());
+    }
+
+    private static void scheduleDeliveryInteractive() {
+        System.out.println("\n--- Schedule Delivery ---");
+        if (orders.isEmpty()) {
+            System.out.println("No orders.");
+            return;
+        }
+        listOrdersBrief();
+        int oid = readPositiveInt("Enter Order ID to schedule delivery for: ");
+        Order order = findOrderById(oid);
+        if (order == null) {
+            System.out.println("Order not found.");
+            return;
+        }
+        if (!order.isPaid()) {
+            System.out.println("Payment not settled. Cannot schedule delivery until payment is recorded.");
+            return;
+        }
+        if (order.isDelivered()) {
+            System.out.println("Order already delivered.");
+            return;
+        }
+        String address = readNonEmpty("Delivery address: ");
+        LocalDate date = LocalDate.now().plusDays(2); // scheduled after 2 days for simplicity
+        Delivery d = new Delivery(order.getId(), address, date, "Scheduled");
+        deliveries.add(d);
+        order.setDelivered(true);
+        System.out.println("Delivery scheduled on " + date + ". Delivery ID: " + d.getId());
+    }
+
+    private static void requestReturnInteractive() {
+        System.out.println("\n--- Request Return ---");
+        if (orders.isEmpty()) {
+            System.out.println("No orders.");
+            return;
+        }
+        listOrdersBrief();
+        int oid = readPositiveInt("Enter your Order ID to request return: ");
+        Order order = findOrderById(oid);
+        if (order == null) {
+            System.out.println("Order not found.");
+            return;
+        }
+        order.printInvoice();
+        int pid = readPositiveInt("Enter Product ID from this order to return: ");
+        Optional<OrderItem> itemOpt = order.getItems().stream().filter(i -> i.getProductId() == pid).findFirst();
+        if (itemOpt.isEmpty()) {
+            System.out.println("This product is not part of the selected order.");
+            return;
+        }
+        OrderItem orderedItem = itemOpt.get();
+        int maxReturnable = orderedItem.getQuantity() - orderedItem.getReturnedQuantity();
+        if (maxReturnable <= 0) {
+            System.out.println("No quantity left to return for this item.");
+            return;
+        }
+        System.out.printf("You can return up to %d units.%n", maxReturnable);
+        int qty = readPositiveInt("Enter quantity to return: ");
+        if (qty > maxReturnable) {
+            System.out.println("Return quantity exceeds purchased-available-for-return amount.");
+            return;
+        }
+        // policy: returns allowed within 7 days of order
+        LocalDate today = LocalDate.now();
+        long daysBetween = java.time.temporal.ChronoUnit.DAYS.between(order.getOrderDate(), today);
+        if (daysBetween > ReturnRequest.POLICY_DAYS) {
+            System.out.println("Return window expired according to policy.");
+            return;
+        }
+        ReturnRequest rr = new ReturnRequest(order.getId(), pid, qty, LocalDate.now());
+        // For simplicity auto-approve if within policy and qty valid
+        rr.setStatus("Approved");
+        returns.add(rr);
+
+        // update inventory: increase stock for product
+        Product p = findProductById(pid);
+        p.setStock(p.getStock() + qty);
+
+        // update order item returned quantity and totals
+        orderedItem.setReturnedQuantity(orderedItem.getReturnedQuantity() + qty);
+        System.out.println("Return approved. Inventory updated.");
+        System.out.printf("Return ID: %d | Product %s | Quantity returned: %d%n", rr.getId(), p.getName(), qty);
+    }
+
+    private static void displayInventoryInteractive() {
+        System.out.println("\n--- Vendor-wise Inventory ---");
+        if (vendors.isEmpty()) {
+            System.out.println("No vendors or products yet.");
+            return;
+        }
+        for (Vendor v : vendors) {
+            System.out.printf("Vendor ID: %d | %s | Contact: %s%n", v.getId(), v.getName(), v.getContact());
+            List<Product> vprods = getProductsByVendor(v.getId());
+            if (vprods.isEmpty()) {
+                System.out.println("  No products.");
+            } else {
+                for (Product p : vprods) {
+                    System.out.printf("  Product ID:%d  Name:%s  Price:%.2f  Stock:%d%n",
+                            p.getId(), p.getName(), p.getPrice(), p.getStock());
+                }
+            }
+            System.out.println();
+        }
+
+        // Also show order history summary per customer
+        System.out.println("--- Customer Order History & Totals ---");
+        if (orders.isEmpty()) {
+            System.out.println("No orders placed yet.");
+        } else {
+            Map<String, Double> customerTotals = new HashMap<>();
+            for (Order o : orders) {
+                System.out.printf("Order ID:%d | Customer:%s | Date:%s | Total:%.2f | Paid:%s | Delivered:%s%n",
+                        o.getId(), o.getCustomerName(), o.getOrderDate(), o.getTotalAmount(), o.isPaid(), o.isDelivered());
+                customerTotals.merge(o.getCustomerName(), o.getTotalAmount(), Double::sum);
+            }
+            System.out.println("\nCustomer totals:");
+            customerTotals.forEach((name, total) -> System.out.printf("  %s : %.2f%n", name, total));
+        }
+    }
+
+    // ----------------------------
+    // Utilities & finders
+    // ----------------------------
+    private static Vendor findVendorById(int id) {
+        return vendors.stream().filter(v -> v.getId() == id).findFirst().orElse(null);
+    }
+
+    private static Product findProductById(int id) {
+        return products.stream().filter(p -> p.getId() == id).findFirst().orElse(null);
+    }
+
+    private static Order findOrderById(int id) {
+        return orders.stream().filter(o -> o.getId() == id).findFirst().orElse(null);
+    }
+
+    private static void listVendorsBrief() {
+        System.out.println("Vendors:");
+        for (Vendor v : vendors) {
+            System.out.printf("  ID:%d  Name:%s%n", v.getId(), v.getName());
+        }
+    }
+
+    private static void displayAllProducts() {
+        System.out.println("Available Products:");
+        for (Product p : products) {
+            Vendor v = findVendorById(p.getVendorId());
+            System.out.printf("  ProductID:%d  Name:%s  Vendor:%s  Price:%.2f  Stock:%d%n",
+                    p.getId(), p.getName(), v != null ? v.getName() : "Unknown", p.getPrice(), p.getStock());
+        }
+    }
+
+    private static List<Product> getProductsByVendor(int vendorId) {
+        List<Product> list = new ArrayList<>();
+        for (Product p : products) {
+            if (p.getVendorId() == vendorId) list.add(p);
+        }
+        return list;
+    }
+
+    private static void listOrdersBrief() {
+        System.out.println("Orders:");
+        for (Order o : orders) {
+            System.out.printf("  OrderID:%d  Customer:%s  Date:%s  Total:%.2f  Paid:%s  Delivered:%s%n",
+                    o.getId(), o.getCustomerName(), o.getOrderDate(), o.getTotalAmount(), o.isPaid(), o.isDelivered());
+        }
+    }
+
+    // ----------------------------
+    // Seed data (optional)
+    // ----------------------------
+    private static void seedSampleData() {
+        Vendor v1 = new Vendor("Green Farm", "green@example.com");
+        Vendor v2 = new Vendor("Fresh Fields", "fresh@example.com");
+        vendors.add(v1);
+        vendors.add(v2);
+
+        Product p1 = new Product(v1.getId(), "Tomato", 30.0, 100);
+        Product p2 = new Product(v1.getId(), "Potato", 20.0, 200);
+        Product p3 = new Product(v2.getId(), "Lettuce", 25.0, 50);
+        products.add(p1);
+        products.add(p2);
+        products.add(p3);
+        v1.getProducts().add(p1.getId());
+        v1.getProducts().add(p2.getId());
+        v2.getProducts().add(p3.getId());
+    }
+
+    // ----------------------------
+    // INNER CLASSES
+    // ----------------------------
+
+    // Vendor
+    public static class Vendor {
+        private static int counter = 1;
+        private final int id;
+        private String name;
+        private String contact;
+        private final List<Integer> products = new ArrayList<>();
+
+        public Vendor(String name, String contact) {
+            this.id = counter++;
+            this.name = name;
+            this.contact = contact;
+        }
+
+        public int getId() { return id; }
+        public String getName() { return name; }
+        public String getContact() { return contact; }
+        public List<Integer> getProducts() { return products; }
+
+        public void setName(String name) { this.name = name; }
+        public void setContact(String contact) { this.contact = contact; }
+    }
+
+    // Product
+    public static class Product {
+        private static int counter = 1;
+        private final int id;
+        private final int vendorId;
+        private String name;
+        private double price;
+        private int stock; // encapsulated
+
+        public Product(int vendorId, String name, double price, int stock) {
+            this.id = counter++;
+            this.vendorId = vendorId;
+            this.name = name;
+            this.price = price;
+            this.stock = stock;
+        }
+
+        public int getId() { return id; }
+        public int getVendorId() { return vendorId; }
+        public String getName() { return name; }
+        public double getPrice() { return price; }
+        public int getStock() { return stock; }
+
+        public void setName(String name) { this.name = name; }
+        public void setPrice(double price) { this.price = price; }
+        public void setStock(int stock) { this.stock = stock; } // encapsulated setter
+    }
+
+    // OrderItem
+    public static class OrderItem {
+        private final int vendorId;
+        private final int productId;
+        private final String productName;
+        private final double unitPrice;
+        private final int quantity;
+        private int returnedQuantity = 0;
+
+        public OrderItem(int vendorId, int productId, String productName, double unitPrice, int quantity) {
+            this.vendorId = vendorId;
+            this.productId = productId;
+            this.productName = productName;
+            this.unitPrice = unitPrice;
+            this.quantity = quantity;
+        }
+
+        public int getVendorId() { return vendorId; }
+        public int getProductId() { return productId; }
+        public String getProductName() { return productName; }
+        public double getUnitPrice() { return unitPrice; }
+        public int getQuantity() { return quantity; }
+        public int getReturnedQuantity() { return returnedQuantity; }
+        public void setReturnedQuantity(int returnedQuantity) { this.returnedQuantity = returnedQuantity; }
+
+        public double lineTotal() {
+            return unitPrice * quantity;
+        }
+    }
+
+    // Order
+    public static class Order {
+        private static int counter = 1;
+        private final int id;
+        private final String customerName;
+        private final LocalDate orderDate;
+        private final List<OrderItem> items = new ArrayList<>();
+        private double totalAmount = 0;
+        private boolean paid = false;
+        private boolean delivered = false;
+
+        public Order(String customerName, LocalDate orderDate) {
+            this.id = counter++;
+            this.customerName = customerName;
+            this.orderDate = orderDate;
+        }
+
+        public int getId() { return id; }
+        public String getCustomerName() { return customerName; }
+        public LocalDate getOrderDate() { return orderDate; }
+        public List<OrderItem> getItems() { return items; }
+        public double getTotalAmount() { return totalAmount; }
+        public boolean isPaid() { return paid; }
+        public boolean isDelivered() { return delivered; }
+
+        public void setPaid(boolean paid) { this.paid = paid; }
+        public void setDelivered(boolean delivered) { this.delivered = delivered; }
+
+        public void calculateTotals() {
+            totalAmount = 0;
+            for (OrderItem i : items) totalAmount += i.lineTotal();
+        }
+
+        public void printInvoice() {
+            System.out.println("Invoice for Order ID: " + id);
+            System.out.println("Customer: " + customerName + " | Date: " + orderDate);
+            System.out.println("Items:");
+            for (OrderItem i : items) {
+                System.out.printf("  ProductID:%d  %s  Unit:%.2f  Qty:%d  LineTotal:%.2f%n",
+                        i.getProductId(), i.getProductName(), i.getUnitPrice(), i.getQuantity(), i.lineTotal());
+            }
+            calculateTotals();
+            System.out.printf("Total Amount: %.2f%n", totalAmount);
+            System.out.println("Paid: " + paid + " | Delivered: " + delivered);
+        }
+    }
+
+    // Payment
+    public static class Payment {
+        private static int counter = 1;
+        private final int id;
+        private final int orderId;
+        private final double amount;
+        private final String method;
+        private final LocalDate paymentDate;
+
+        public Payment(int orderId, double amount, String method, LocalDate paymentDate) {
+            this.id = counter++;
+            this.orderId = orderId;
+            this.amount = amount;
+            this.method = method;
+            this.paymentDate = paymentDate;
+        }
+
+        public int getId() { return id; }
+        public int getOrderId() { return orderId; }
+        public double getAmount() { return amount; }
+        public String getMethod() { return method; }
+        public LocalDate getPaymentDate() { return paymentDate; }
+    }
+
+    // Delivery
+    public static class Delivery {
+        private static int counter = 1;
+        private final int id;
+        private final int orderId;
+        private final String address;
+        private final LocalDate scheduledDate;
+        private String status; // Scheduled, OutForDelivery, Completed, Cancelled
+
+        public Delivery(int orderId, String address, LocalDate scheduledDate, String status) {
+            this.id = counter++;
+            this.orderId = orderId;
+            this.address = address;
+            this.scheduledDate = scheduledDate;
+            this.status = status;
+        }
+
+        public int getId() { return id; }
+        public int getOrderId() { return orderId; }
+        public String getAddress() { return address; }
+        public LocalDate getScheduledDate() { return scheduledDate; }
+        public String getStatus() { return status; }
+        public void setStatus(String status) { this.status = status; }
+    }
+
+    // ReturnRequest
+    public static class ReturnRequest {
+        public static final int POLICY_DAYS = 7; // returns allowed within 7 days
+        private static int counter = 1;
+        private final int id;
+        private final int orderId;
+        private final int productId;
+        private final int quantity;
+        private final LocalDate requestDate;
+        private String status = "Pending"; // Pending, Approved, Rejected
+
+        public ReturnRequest(int orderId, int productId, int quantity, LocalDate requestDate) {
+            this.id = counter++;
+            this.orderId = orderId;
+            this.productId = productId;
+            this.quantity = quantity;
+            this.requestDate = requestDate;
+        }
+
+        public int getId() { return id; }
+        public int getOrderId() { return orderId; }
+        public int getProductId() { return productId; }
+        public int getQuantity() { return quantity; }
+        public LocalDate getRequestDate() { return requestDate; }
+        public String getStatus() { return status; }
+        public void setStatus(String status) { this.status = status; }
+    }
+}
